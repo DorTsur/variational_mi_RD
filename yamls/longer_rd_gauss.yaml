@@ -1,0 +1,37 @@
+program: main.py
+method: grid
+metric:
+  goal: maximize
+  name: mi_final
+parameters:
+  kl_loss:
+    values: ['dv']
+  batch_size:
+    values: [1500]
+  num_iter:
+    values: [150000]
+  critic_activation:
+    values: ['elu']
+  xy_dim:
+    values: [1]
+  u_std:
+    values: [0.1, 1]
+  grad_clip_val:
+    values: [0.01]
+  critic_layers:
+    values: [2]
+  D:
+    values: [0.03, 0.04, 0.05]
+  x_dim:
+    values: [50, 75, 100]
+  cuda_visible:
+    values: ['5']
+  using_wandb:
+    values: [1]
+  wandb_project_name:
+    values: ["RD_Gauss_results"]
+  experiment:
+    values: ["rd_gauss"]
+
+
+

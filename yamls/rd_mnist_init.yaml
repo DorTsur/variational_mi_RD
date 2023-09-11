@@ -1,0 +1,29 @@
+program: main.py
+method: grid
+metric:
+  goal: maximize
+  name: mi_final
+parameters:
+  kl_loss:
+    values: ['dv']
+  batch_size:
+    values: [128, 256]
+  num_epochs:
+    values: [250]
+  grad_clip_val:
+    values: [0.01, 0.1, 1]
+  D:
+    values: [1,3,6,9,12,15,18,21,24,27]
+  cuda_visible:
+    values: ['1']
+  using_wandb:
+    values: [1]
+  wandb_project_name:
+    values: ["mnist_vae_init_sweep"]
+  lr:
+    values: [0.0005, 0.001, 0.005]
+  experiment:
+    values: ["mnist_vae"]
+
+
+

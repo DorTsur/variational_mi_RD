@@ -1,0 +1,39 @@
+program: main.py
+method: grid
+metric:
+  goal: maximize
+  name: mi_final
+parameters:
+  kl_loss:
+    values: ['dv','nwj','FLO','regularized_dv','infonce','smile']
+  batch_size:
+    values: [500]
+  num_iter:
+    values: [70000]
+  critic_activation:
+    values: ['elu']
+  xy_dim:
+    values: [1]
+  x_dim:
+    values: [10]
+  smile_tau:
+    values: [5.0]
+  u_std:
+    values: [0.1]
+  grad_clip_val:
+    values: [0.01]
+  critic_layers:
+    values: [2]
+  D:
+    values: [0.05, 0.08, 0.1]
+  cuda_visible:
+    values: ['3']
+  using_wandb:
+    values: [1]
+  wandb_project_name:
+    values: ["ablation_kl"]
+  experiment:
+    values: ["rd_gauss"]
+
+
+

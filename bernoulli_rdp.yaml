@@ -1,0 +1,45 @@
+program: main.py
+method: grid
+metric:
+  goal: maximize
+  name: mi_final
+parameters:
+  kl_loss:
+    values: ['dv']
+  batch_size:
+    values: [2500]
+  num_iter:
+    values: [12000]
+  critic_activation:
+    values: ['elu']
+  xy_dim:
+    values: [1]
+  x_dim:
+    values: [1]
+  u_std:
+    values: [0.1]
+  D:
+    values: [0.001, 0.009, 0.018, 0.026, 0.034, 0.042, 0.051, 0.059, 0.067, 0.076, 0.084, 0.092, 0.101, 0.109, 0.117, 0.125, 0.134, 0.142, 0.150, 0.159, 0.167, 0.175, 0.183]
+  P:
+    values: [0.01, 0.03, 0.06]
+  cuda_visible:
+    values: ['3']
+  using_wandb:
+    values: [1]
+  increase_gamma:
+    values: [1]
+  perception:
+    values: [1]
+  gamma_p:
+    values: [20.0]
+  bern_p:
+    values: [0.1]
+  max_gamma:
+    values: [10000000]
+  wandb_project_name:
+    values: ["rdp_bernoulli_sweep"]
+  experiment:
+    values: ["discrete_alt"]
+
+
+
