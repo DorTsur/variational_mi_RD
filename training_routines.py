@@ -1,7 +1,7 @@
 import torch
 from utilities import GaussianRateDistortion, GaussianRateDistortionPerception
 # from simplified.simplified_model import *
-from estimator_fns import estimate_mutual_information
+from estimator_fns import estimate_mutual_information, club_loss, log_loss
 import os
 import numpy as np
 import torch.optim as optim
@@ -655,12 +655,15 @@ class TrainWithLoader(TrainMINE):
 
     def train(self):
         # Simple implementation of joint training - not alternating
+        if self.config.kl_loss == 'club':
+            self.train_club()
+            return
         mi_list = []
         for epoch in range(self.config.num_epochs):
             mi_epoch = []
             distortion_epoch = []
             if self.config.increase_gamma:
-                self.gamma *= 2
+                self.gamma = min(self.config.gamma_cap, 10*self.gamma)
             for i, (x, _) in enumerate(self.dataloader, 0):
                 # KL step:
                 for opt in self.opt.values():
@@ -708,7 +711,7 @@ class TrainWithLoader(TrainMINE):
 
                 mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
                 if self.config.regularize:
-                    loss = mi + self.config.gamma_d*self.distortion_reg(x, y)
+                    loss = mi + self.gamma*self.distortion_reg(x, y)
                 else:
                     loss = mi
 
@@ -727,6 +730,7 @@ class TrainWithLoader(TrainMINE):
                 if i != 0 and i % 100 == 0:
                     print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
 
+            print(self.model['ndt'].quantizer.centers)
             mi_epoch = np.mean(mi_epoch)
             distortion_epoch = np.mean(distortion_epoch)
             print(f'Epoch {epoch+1}, Estimated MI {mi_epoch:.3f} [nats], Distortion {distortion_epoch:.3f}')
@@ -737,9 +741,94 @@ class TrainWithLoader(TrainMINE):
 
             if self.config.using_wandb:
                 wandb.log({'mi_train': mi_epoch})
+                wandb.log({'d_train': distortion_epoch})
                 wandb.log({'Epoch': epoch})
 
-        self.plot_result(mi_list)
+
+        # self.plot_result(mi_list)
+
+    def train_club(self):
+        """
+        Training routine that combines the CLUB and a VAE model.
+        """
+        mi_list = []
+        for epoch in range(self.config.num_epochs):
+            mi_epoch = []
+            distortion_epoch = []
+            if self.config.increase_gamma:
+                self.gamma = min(self.config.gamma_cap, 10*self.gamma)
+
+            for i, (x, _) in enumerate(self.dataloader, 0):
+                # CLUB step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                x = x.cuda()
+                y, mu, logvar = self.model['ndt'](x)
+                x = x.reshape(-1, 784)
+                y = y.reshape(-1, 784)
+
+                loss = log_loss((mu, logvar, y))
+                # verify we don't need a '-'
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['kl'].parameters(), self.config.grad_clip_val)
+                self.opt['kl'].step()
+
+                # VAE step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                x = x.cuda()
+                y, mu, logvar = self.model['ndt'](x)
+                x = x.reshape(-1, 784)
+                y = y.reshape(-1, 784)
+
+                loss = club_loss((mu, logvar, y))
+                # verify we don't need a '-'
+                distortion_reg = self.gamma*self.distortion_reg(x, y)
+                loss += distortion_reg
+
+                if self.config.quantizer_centers_reg and self.config.quantize_alphabet > 0:
+                    loss += 0.1*torch.sum(self.model['ndt'].quantizer.centers ** 2)
+
+                if self.config.perception:
+                    loss += self.perception_reg(x, y)
+
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['ndt'].parameters(), self.config.grad_clip_val)
+                self.opt['ndt'].step()
+
+                distortion = self.calc_distortion(x, y)
+
+
+                mi_epoch.append(loss.detach().cpu().numpy())
+                distortion_epoch.append(distortion.numpy())
+                if i != 0 and i % 100 == 0:
+                    print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
+
+            mi_epoch = np.mean(mi_epoch)
+            distortion_epoch = np.mean(distortion_epoch)
+            print(f'Epoch {epoch+1}, Estimated MI {mi_epoch:.3f} [nats], Distortion {distortion_epoch:.3f}')
+            mi_list.append(mi_epoch)
+
+
+
+            if epoch % self.config.save_epoch == 0 and self.config.data == 'MNIST':
+                self.visualizer.visualize(epoch=epoch, dataloader=self.dataloader, model=self.model['ndt'])
+
+            if self.config.using_wandb:
+                wandb.log({'mi_train': mi_epoch})
+                wandb.log({'d_train': distortion_epoch})
+                wandb.log({'Epoch': epoch})
+
+        # self.plot_result(mi_list)
 
     def plot_result(self, data):
         # Plot the training losses.
@@ -790,6 +879,12 @@ class TrainWithLoader(TrainMINE):
             eval.append(mi)
 
         torch.cuda.empty_cache()
+
+        if self.config.using_wandb:
+            entropy, ub = self.model['ndt'].entropy_coded(x)
+            wandb.log({'rate_ub': ub})
+            wandb.log({'huffman_entropy': entropy})
+            print(f'rate {ub} and entropy {entropy}')
 
         return sum(eval)/len(eval)
 

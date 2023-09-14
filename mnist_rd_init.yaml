@@ -1,0 +1,43 @@
+program: main.py
+method: grid
+metric:
+  goal: maximize
+  name: mi_final
+parameters:
+  kl_loss:
+    values: ['dv','infonce']
+  batch_size:
+    values: [128]
+  num_epochs:
+    values: [50]
+  xy_dim:
+    values: [1]
+  grad_clip_val:
+    values: [0.1]
+  cuda_visible:
+    values: ['3']
+  quantize_alphabet:
+    values: [0,2,4,6,8]
+  gamma_cap:
+    values: [1000000000]
+  D:
+    values: [0.0001, 0.001, 0.01, 0.1 ]
+  using_wandb:
+    values: [1]
+  latent_dim:
+    values: [2,4,6]
+  regularize:
+    values: [1]
+  save_epoch:
+    values: [15]
+  perception:
+    values: [0]
+  model:
+    values: ['MNIST_VAE_BM']
+  wandb_project_name:
+    values: ["BM_model_debug_sweep"]
+  experiment:
+    values: ["mnist_vae"]
+
+
+

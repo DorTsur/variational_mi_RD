@@ -192,8 +192,8 @@ def regularized_dv(f, factor=None):
 def log_loss(f):
     # log loss for club-based scheme (reparametrization trick)
     mu, logvar, y_samples = f  # unpack f
-    mi = (-(mu - y_samples)**2 /logvar.exp()-logvar).sum(dim=1).mean(dim=0)
-    return mi
+    loss = (-(mu - y_samples)**2 /logvar.exp()-logvar).sum(dim=1).mean(dim=0)
+    return loss
 
 
 def club_loss(f):
@@ -303,7 +303,7 @@ def estimate_mutual_information(estimator, x, y, critic_fn, club_flag=None,
         mi = smile_loss(scores)
     elif estimator == 'regularized_dv':
         mi = regularized_dv(scores)
-    elif estimator == 'CLUB':
+    elif estimator == 'club':
         scores = (scores[0], scores[1], y)
         if club_flag == 'q_loss':
             mi = log_loss(scores)

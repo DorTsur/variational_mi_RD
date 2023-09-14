@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import wandb
 
 class Visualizer(object):
     def __init__(self, config):
@@ -51,9 +52,12 @@ class Visualizer(object):
                                  figsize=(6, 30))  # 10 rows for 10 image pairs, 2 columns for two images in each pair
 
         # Use a loop to display each image pair
+        concatenated = []
         for i in range(10):
             axes[i, 0].imshow(images_original[i], cmap='gray', norm='linear')
             axes[i, 1].imshow(images_reconstructed[i], cmap='gray', norm='linear')
+
+            concatenated.append(np.concatenate([images_original[i], images_reconstructed[i]], axis=0))
 
             # Remove axis ticks for better visualization
             axes[i, 0].axis('off')
@@ -61,6 +65,10 @@ class Visualizer(object):
 
         plt.tight_layout()  # Adjusts spacing between subplots for better layout
         # plt.show()
+
+        concatenated = np.concatenate(concatenated, axis=1)
+        if epoch == self.config.num_epochs-1:
+            wandb.log({"images": wandb.Image(concatenated)})
 
         # concatenated_images = np.vstack([np.hstack([img1, img2]) for img1, img2 in zip(images_original, images_reconstructed)])
         #

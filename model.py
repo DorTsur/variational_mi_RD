@@ -48,6 +48,12 @@ def GetModel(config):
     elif config.model == 'MNIST_VAE':
         model = {
             'kl': SeparableCritic(config).cuda(),
+            'ndt': VAE(config).cuda()
+        #     TD - MODELS
+        }
+    elif config.model == 'MNIST_VAE_BM':
+        model = {
+            'kl': SeparableCritic(config).cuda(),
             'ndt': BM_VAE(config).cuda()
         #     TD - MODELS
         }

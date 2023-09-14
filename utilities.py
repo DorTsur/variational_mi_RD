@@ -139,3 +139,15 @@ def hamming_rdp(D, P, p=0.5):
     else:
         return 0.0
 
+
+def compute_huffman_entropy(symbols_hard):
+    # Compute the frequency of each symbol
+    unique, counts = symbols_hard.unique(return_counts=True)
+
+    # Compute the probabilities
+    probabilities = counts.float() / symbols_hard.numel()
+
+    # Compute the entropy
+    entropy = -torch.sum(probabilities * torch.log(probabilities))
+
+    return entropy

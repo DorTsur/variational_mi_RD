@@ -11,11 +11,11 @@ logger = logging.getLogger("logger")
 
 def GetConfig(args):
     config = {
-        'cuda_visible': 3,  # idx 1->0, idx 3->5, idx 0->2
+        'cuda_visible': 5,  # idx 1->0, idx 3->5, idx 0->2
 
         'experiment': 'mnist_vae',
         # for setting the model,trainer,data params, options (AWGN, rd_gauss, MINE_NDT_discrete, mnist, gauss_loader, mnist_vae, rdp_gauss, discrete_alt)
-        'model': 'MNIST',  # (MINE, MINE_NDT, MINE_NDT_discrete)
+        'model': 'MNIST_VAE_BM',  # (MINE, MINE_NDT, MINE_NDT_discrete, MNIST_VAE, MNIST_VAE_BM)
         'trainer': 'Both_Loader',  # (MINE, MINE_NDT, MINE_NDT_discrete, Both_Loader)
 
         # 'experiment': 'rd_gauss',  # for setting the model,trainer,data params, options (AWGN, rd_gauss)
@@ -36,7 +36,7 @@ def GetConfig(args):
         'D': 0.001,
         'P': 0.0001,
         'regularize': 1,
-        'gamma_d': 100,
+        'gamma_d': 1000,
         'gamma_discrete': 20,
         'max_gamma': 1000000,
 
@@ -55,18 +55,18 @@ def GetConfig(args):
         'gsm_temperature': 1.0,
         'eval_freq': 2500,
 
-        'kl_loss': 'dv',  # (smile, infonce, js, dv, tuba, nwj, ent_decomp, regularized_dv, FLO, CLUB)
+        'kl_loss': 'dv',  # (smile, infonce, js, dv, tuba, nwj, ent_decomp, regularized_dv, FLO, club)
 
         'using_wandb': 1,
-        'wandb_project_name': '20d_gauss_FLO_debug',
+        'wandb_project_name': 'debug_mnist',
 
         'clip_grads': 1,
         'grad_clip_val': 0.01,
         'xy_dim': 1,
 
-        'num_epochs': 250,
+        'num_epochs': 50,
         'image_batch_size': 64,
-        'save_epoch': 5,
+        'save_epoch': 15,
         'num_samples': 150000,  # len of synthetic dataloader
 
         'gamma_p': 20.0,
@@ -77,10 +77,12 @@ def GetConfig(args):
         'bern_p': 0.5,
         'increase_gamma': 1,
 
-        'quantize': 1,
         'noise_encoder': 1,
-        'quantize_alphabet': 2,
-        'latent_dim': 2
+        'quantize_alphabet': 6,   # quantize_alphabet=0 is means we don't quantize
+        'latent_dim': 6,
+        'gamma_cap': 100000000,
+        'quantizer_centers_reg': 0,
+        'out_vae_latent': 1
 
     }
 
@@ -106,13 +108,13 @@ def GetConfig(args):
         elif config.experiment == 'mnist':
             config.data, config.model, config.trainer, config.batch_size = 'MNIST', 'MNIST', 'Both_Loader', 128
         elif config.experiment == 'mnist_vae':
-            config.data, config.model, config.trainer, config.batch_size, config.x_dim = 'MNIST', 'MNIST_VAE', 'Both_Loader', 128, 784
+            config.data, config.trainer, config.batch_size, config.x_dim = 'MNIST', 'Both_Loader', 128, 784
         elif config.experiment == 'discrete_alt':
             config.data, config.model, config.trainer = 'Discrete', 'DiscreteAlt', 'MINE_NDT_DiscreteAlt'
 
     now = datetime.datetime.now()
     date_string = now.strftime("%Y-%m-%d_%H-%M-%S")
-    config.dir = f'results/{config.data}/B_{config.batch_size}_{date_string}'
+    config.dir = f'results/{config.data}/B_{config.batch_size}_{config.model}_{date_string}'
 
     if not os.path.exists(config.dir):
         os.makedirs(config.dir)

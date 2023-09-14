@@ -27,7 +27,7 @@ def main():
     trainer = GetTrainer(config, model, data_gen)
 
     trainer.train()
-    trainer.process_results()
+    # trainer.process_results()
 
 
 

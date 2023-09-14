@@ -26,15 +26,19 @@ def GetArgs():
     argparser.add_argument('--bern_p', default=None, type=float, help='')
 
     argparser.add_argument('--gamma_p', default=None, type=float, help='')
+    argparser.add_argument('--gamma_cap', default=None, type=float, help='')
     argparser.add_argument('--increase_gamma', default=None, type=int, help='')
     argparser.add_argument('--perception', default=None, type=int, help='')
     argparser.add_argument('--max_gamma', default=None, type=int, help='')
+    argparser.add_argument('--latent_dim', default=None, type=int, help='')
 
     argparser.add_argument('--batch_size', default=None, type=int, help='')
     argparser.add_argument('--num_iter', default=None, type=int, help='')
     argparser.add_argument('--eval_batches', default=None, type=int, help='')
     argparser.add_argument('--lr', default=None, type=float, help='')
     argparser.add_argument('--num_epochs', default=None, type=int, help='')
+    argparser.add_argument('--regularize', default=None, type=int, help='')
+    argparser.add_argument('--quantize_alphabet', default=None, type=int, help='')
 
     argparser.add_argument('--critic_hidden_dim', default=None, type=int, help='')
     argparser.add_argument('--critic_embed_dim', default=None, type=int, help='')
@@ -42,6 +46,8 @@ def GetArgs():
     argparser.add_argument('--cuda_visible', default=None, type=int, help='')
     argparser.add_argument('--using_wandb', default=None, type=int, help='')
     argparser.add_argument('--critic_activation', default=None, type=str, help='')
+
+    argparser.add_argument('--save_epoch', default=None, type=int, help='')
 
     argparser.add_argument('--clip_grads', default=None, type=int, help='')
     argparser.add_argument('--grad_clip_val', default=None, type=float, help='')
