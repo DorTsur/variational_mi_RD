@@ -55,6 +55,12 @@ def Wasserstein1D(x,y, p=2):
     y_sorted, _ = torch.sort(y, dim=0)
     return (x_sorted-y_sorted).pow(p).mean()
 
+def Wasserstein_KR(x,y,h):
+    """
+    calculate the loss for Wasserstein regularization through Krnatarovich-Rubenstein duality
+    """
+    return h(x).mean()-h(y).mean()
+
 def GaussianRateDistortionPerception(D, P):
     return rdp_(D=D, P=P, s=1)
     # if np.sqrt(P) < 1 - np.sqrt(np.abs(1-D)):

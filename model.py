@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Dict
 import torch.nn.functional as F
 from models.discrete_opt_models import DiscreteNDT, PMFModel, SamplerModel
-from models.lossy_compression import BM_VAE, VAE, VAE_
+from models.lossy_compression import BM_VAE, VAE, VAE_, BMDiscriminator
 
 
 
@@ -54,8 +54,8 @@ def GetModel(config):
     elif config.model == 'MNIST_VAE_BM':
         model = {
             'kl': SeparableCritic(config).cuda(),
-            'ndt': BM_VAE(config).cuda()
-        #     TD - MODELS
+            'ndt': BM_VAE(config).cuda(),
+            'perception': BMDiscriminator().cuda()
         }
     elif config.model == 'DiscreteAlt':
         model = {

@@ -67,8 +67,9 @@ class Visualizer(object):
         # plt.show()
 
         concatenated = np.concatenate(concatenated, axis=1)
-        if epoch == self.config.num_epochs-1:
+        if epoch == 'final':
             wandb.log({"images": wandb.Image(concatenated)})
+            return
 
         # concatenated_images = np.vstack([np.hstack([img1, img2]) for img1, img2 in zip(images_original, images_reconstructed)])
         #

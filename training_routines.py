@@ -12,10 +12,12 @@ import matplotlib.pyplot as plt
 from visualizers import Visualizer
 from estimator_fns import club_loss
 import matplotlib.pyplot as plt
-from utilities import Wasserstein1D
+from utilities import Wasserstein1D, Wasserstein_KR
 from utilities import hamming_rd, hamming_rdp
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.autograd import Variable
+import torch.autograd as autograd
 
 
 
@@ -652,11 +654,17 @@ class TrainWithLoader(TrainMINE):
         self.visualizer = Visualizer(config)
         self.gamma = config.gamma_d
         self.distortion = 'mse'
+        if config.perception:
+            self.opt['perception'] = optim.Adam(self.model['perception'].parameters(), lr=config.lr)
+            self.gamma_gp = 10.0
 
     def train(self):
         # Simple implementation of joint training - not alternating
         if self.config.kl_loss == 'club':
             self.train_club()
+            return
+        if self.config.perception == 1 and self.config.data == 'MNIST':
+            self.train_perception()
             return
         mi_list = []
         for epoch in range(self.config.num_epochs):
@@ -730,10 +738,10 @@ class TrainWithLoader(TrainMINE):
                 if i != 0 and i % 100 == 0:
                     print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
 
-            print(self.model['ndt'].quantizer.centers)
+            # print(self.model['ndt'].quantizer.centers)
             mi_epoch = np.mean(mi_epoch)
             distortion_epoch = np.mean(distortion_epoch)
-            print(f'Epoch {epoch+1}, Estimated MI {mi_epoch:.3f} [nats], Distortion {distortion_epoch:.3f}')
+            print(f'Epoch {epoch+1}, Estimated MI {mi_epoch:.4f} [nats], Distortion {distortion_epoch:.4f}')
             mi_list.append(mi_epoch)
 
             if epoch % self.config.save_epoch == 0 and self.config.data == 'MNIST':
@@ -744,6 +752,104 @@ class TrainWithLoader(TrainMINE):
                 wandb.log({'d_train': distortion_epoch})
                 wandb.log({'Epoch': epoch})
 
+
+        # self.plot_result(mi_list)
+
+    def train_perception(self):
+        # Simple implementation of joint training - not alternating
+        mi_list = []
+        for epoch in range(self.config.num_epochs):
+            mi_epoch = []
+            distortion_epoch = []
+            perception_epoch = []
+
+            if self.config.increase_gamma:
+                self.gamma = min(self.config.gamma_cap, 10 * self.gamma)
+            for i, (x, _) in enumerate(self.dataloader, 0):
+                # KL step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                x = x.cuda()
+
+                y = self.model['ndt'](x)
+
+                mi = estimate_mutual_information(self.config.kl_loss, x.reshape(-1, 784), y.reshape(-1, 784), self.model['kl'], 'q_loss')
+                loss = -mi
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['kl'].parameters(), self.config.grad_clip_val)
+                self.opt['kl'].step()
+
+
+                # NDT step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                y = self.model['ndt'](x)
+
+                loss = estimate_mutual_information(self.config.kl_loss, x.reshape(-1, 784), y.reshape(-1, 784), self.model['kl'])
+                distortion = self.distortion_reg(x.reshape(-1, 784), y.reshape(-1, 784))
+                loss += self.gamma * distortion
+                if epoch >= self.config.perceptionless_epochs:
+                    perception = self.perception_reg(x, y)
+                    loss += self.gamma * perception
+                else:
+                    p = 0.0
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['ndt'].parameters(), self.config.grad_clip_val)
+                self.opt['ndt'].step()
+
+                d = self.calc_distortion(x,y)
+                p = Wasserstein_KR(x, y, self.model['perception']).detach().cpu().numpy()
+
+                mi_epoch.append(mi.detach().cpu().numpy())
+                distortion_epoch.append(d)
+                perception_epoch.append(p)
+
+
+                # perception discriminator step (Wasserstein perception implementation)
+                """
+                train this model for first 'k' epochs and then see if further training is needed on every epoch.
+                """
+
+
+
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                y = self.model['ndt'](x).detach()
+                W_loss = -Wasserstein_KR(x, y, self.model['perception'])
+                grad_penalty = self.compute_gradient_penalty(self.model['perception'], x, y)
+                loss = W_loss + self.gamma_gp * grad_penalty
+                loss.backward()
+                # print(f'W_loss={W_loss.detach().cpu().numpy()}, GP={grad_penalty}')
+
+                # if self.config.clip_grads:
+                #     torch.nn.utils.clip_grad_norm_(self.model['perception'].parameters(), self.config.grad_clip_val)
+                self.opt['perception'].step()
+
+                if i != 0 and i % 100 == 0:
+                    print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
+
+
+            # print(self.model['ndt'].quantizer.centers)
+            mi_epoch = np.mean(mi_epoch)
+            distortion_epoch = np.mean(distortion_epoch)
+            perception_epoch = np.mean(perception_epoch)
+            print(f'Epoch {epoch + 1}, Estimated MI {mi_epoch:.3f} [nats], Distortion {distortion_epoch:.4f}, Perception {perception_epoch:.4f}')
+            mi_list.append(mi_epoch)
+
+            if epoch % self.config.save_epoch == 0 and self.config.data == 'MNIST':
+                self.visualizer.visualize(epoch=epoch, dataloader=self.dataloader, model=self.model['ndt'])
+
+            if self.config.using_wandb:
+                wandb.log({'mi_train': mi_epoch})
+                wandb.log({'d_train': distortion_epoch})
+                wandb.log({'Epoch': epoch})
 
         # self.plot_result(mi_list)
 
@@ -851,8 +957,8 @@ class TrainWithLoader(TrainMINE):
             return 0.0
         if self.config.perception_type == 'W2' and self.config.x_dim == 1:
             return Wasserstein1D(x, y, p=2)
-        if self.config.perception_type == 'W2_gauss':
-            pass  # TD if needed
+        if self.config.data == 'MNIST':
+            return (Wasserstein_KR(x, y, self.model['perception'])-self.config.P).square()
         return 0.0
 
     def eval_step(self, mode='final'):
@@ -877,6 +983,8 @@ class TrainWithLoader(TrainMINE):
                 mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
 
             eval.append(mi)
+
+        self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
 
         torch.cuda.empty_cache()
 
@@ -908,6 +1016,30 @@ class TrainWithLoader(TrainMINE):
         if self.config.data == 'MNIST':
             return nn.MSELoss()(x, y)
         return torch.square(torch.mean(torch.square(torch.linalg.norm(x - y, dim=-1))) - self.config.D)
+
+    def compute_gradient_penalty(self, h, x, y):
+        """
+        Calculates the gradient penalty loss for Wasserstein Discriminator
+        code from https://github.com/eriklindernoren/PyTorch-GAN
+        """
+        # Random weight term for interpolation between real and fake samples
+        alpha = torch.Tensor(np.random.random((x.size(0), 1, 1, 1))).cuda()
+        # Get random interpolation between real and fake samples
+        interpolates = (alpha * x + ((1 - alpha) * y)).requires_grad_(True)
+        d_interpolates = h(interpolates)
+        fake = Variable(torch.Tensor(x.shape[0], 1).fill_(1.0), requires_grad=False).cuda()
+        # Get gradient w.r.t. interpolates
+        gradients = autograd.grad(
+            outputs=d_interpolates,
+            inputs=interpolates,
+            grad_outputs=fake,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gradient_penalty
 
 
 

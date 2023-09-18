@@ -280,6 +280,16 @@ class BMDecoder(nn.Module):
         return x
 
 
+class BMDiscriminator(nn.Module):
+    def __init__(self):
+        super(BMDiscriminator, self).__init__()
+        self.convs = nn.Sequential(*[nn.Conv2d(1, 64, kernel_size=2, stride=2, padding=0), nn.ReLU(),
+                      nn.Conv2d(64, 128, kernel_size=2, stride=2, padding=0), nn.ReLU(),
+                      nn.Conv2d(128, 256, kernel_size=1, stride=2, padding=0), nn.ReLU()])
+        self.linear = nn.Linear(4096,1)
 
-
-
+    def forward(self, x):
+        x = self.convs(x)
+        x = x.view(-1, 4096)
+        x = self.linear(x)
+        return x

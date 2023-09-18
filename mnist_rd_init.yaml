@@ -17,11 +17,11 @@ parameters:
   cuda_visible:
     values: ['3']
   quantize_alphabet:
-    values: [0,2,4,6,8]
+    values: [2,4,6,8]
   gamma_cap:
     values: [1000000000]
   D:
-    values: [0.0001, 0.001, 0.01, 0.1 ]
+    values: [0.05, 0.04, 0.03, 0.02, 0.01, 0.0]
   using_wandb:
     values: [1]
   latent_dim:
@@ -35,7 +35,7 @@ parameters:
   model:
     values: ['MNIST_VAE_BM']
   wandb_project_name:
-    values: ["BM_model_debug_sweep"]
+    values: ["BM_model_debug_sweep1"]
   experiment:
     values: ["mnist_vae"]
 

@@ -34,7 +34,7 @@ def GetConfig(args):
         'smile_tau': 5.0,
 
         'D': 0.001,
-        'P': 0.0001,
+        'P': 0.15,
         'regularize': 1,
         'gamma_d': 1000,
         'gamma_discrete': 20,
@@ -82,7 +82,9 @@ def GetConfig(args):
         'latent_dim': 6,
         'gamma_cap': 100000000,
         'quantizer_centers_reg': 0,
-        'out_vae_latent': 1
+        'out_vae_latent': 1,
+
+        'perceptionless_epochs': 0
 
     }
 
