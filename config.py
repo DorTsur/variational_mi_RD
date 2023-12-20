@@ -11,9 +11,9 @@ logger = logging.getLogger("logger")
 
 def GetConfig(args):
     config = {
-        'cuda_visible': 5,  # idx 1->0, idx 3->5, idx 0->2
+        'cuda_visible': 3,  # idx 1->0, idx 3->5, idx 0->2
 
-        'experiment': 'mnist_vae',
+        'experiment': 'mnist_vae',  # I run with mnist_vae
         # for setting the model,trainer,data params, options (AWGN, rd_gauss, MINE_NDT_discrete, mnist, gauss_loader, mnist_vae, rdp_gauss, discrete_alt)
         'model': 'MNIST_VAE_BM',  # (MINE, MINE_NDT, MINE_NDT_discrete, MNIST_VAE, MNIST_VAE_BM)
         'trainer': 'Both_Loader',  # (MINE, MINE_NDT, MINE_NDT_discrete, Both_Loader)
@@ -33,8 +33,8 @@ def GetConfig(args):
 
         'smile_tau': 5.0,
 
-        'D': 0.001,
-        'P': 0.15,
+        'D': 0.06,
+        'P': 0.0,
         'regularize': 1,
         'gamma_d': 1000,
         'gamma_discrete': 20,
@@ -61,16 +61,17 @@ def GetConfig(args):
         'wandb_project_name': 'debug_mnist',
 
         'clip_grads': 1,
-        'grad_clip_val': 0.01,
+        'grad_clip_val': 1.0,
         'xy_dim': 1,
 
-        'num_epochs': 50,
+        'num_epochs': 45,
+
         'image_batch_size': 64,
         'save_epoch': 15,
         'num_samples': 150000,  # len of synthetic dataloader
 
         'gamma_p': 20.0,
-        'perception': 1,
+        'perception': 0,
         'perception_type': 'W2',  #'W2' for wasserstein2 perception
 
         'alphabet_size': 3,
@@ -78,13 +79,16 @@ def GetConfig(args):
         'increase_gamma': 1,
 
         'noise_encoder': 1,
-        'quantize_alphabet': 6,   # quantize_alphabet=0 is means we don't quantize
-        'latent_dim': 6,
+        'quantize_alphabet': 14,   # quantize_alphabet=0 is means we don't quantize
+        'latent_dim': 7,
         'gamma_cap': 100000000,
         'quantizer_centers_reg': 0,
         'out_vae_latent': 1,
 
-        'perceptionless_epochs': 0
+        'perceptionless_epochs': 25,
+        'sweep': 0,
+        'quantizer': 'fsq',  # 'traditional','fsq'
+        'gamma_rdp': 0.1
 
     }
 
@@ -111,8 +115,17 @@ def GetConfig(args):
             config.data, config.model, config.trainer, config.batch_size = 'MNIST', 'MNIST', 'Both_Loader', 128
         elif config.experiment == 'mnist_vae':
             config.data, config.trainer, config.batch_size, config.x_dim = 'MNIST', 'Both_Loader', 128, 784
+        elif config.experiment == 'OnlyRDP':
+            config.data, config.trainer, config.batch_size, config.x_dim = 'MNIST', 'OnlyRDP', 128, 784
         elif config.experiment == 'discrete_alt':
             config.data, config.model, config.trainer = 'Discrete', 'DiscreteAlt', 'MINE_NDT_DiscreteAlt'
+        elif config.experiment == 'coding_gauss':
+            config.data, config.model, config.trainer = 'GaussianRD', 'VecCoding', 'MINE_NDT_coding'
+
+    if hasattr(config, 'sweep') and config.sweep:
+        if not params_valid(config):
+            raise Exception("sweep param combination irrelevant")
+
 
     now = datetime.datetime.now()
     date_string = now.strftime("%Y-%m-%d_%H-%M-%S")
@@ -188,3 +201,19 @@ class Config(Bunch):
     # config = read_json_to_dict(json_file)
 
     # Turn into Bunch object
+
+
+def params_valid(config):
+    """
+    flitering number of runs
+    """
+    D = config.D
+    dim = config.latent_dim
+    q = config.quantize_alphabet
+    if D > 0.035 and dim < 6 and q < 6:
+        return True
+    elif D <= 0.035 and dim > 2 and q > 4:
+        return True
+    elif config.perception == 0 and config.P == 0:
+        return True
+    return False

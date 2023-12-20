@@ -22,9 +22,15 @@ def GetDataLoader(config, for_eval=None):
         dataset = GaussianDataset(config)
 
 
-    dataloader = torch.utils.data.DataLoader(dataset,
+    if for_eval:
+        dataloader = torch.utils.data.DataLoader(dataset,
+                                                 batch_size=60000,
+                                                 shuffle=True)
+    else:
+        dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=config['batch_size'],
                                              shuffle=True)
+
     return dataloader
 
 

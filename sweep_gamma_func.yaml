@@ -5,41 +5,46 @@ metric:
   name: mi_final
 parameters:
   kl_loss:
-    values: ['dv','infonce']
+    values: ['dv']
   batch_size:
     values: [128]
   num_epochs:
-    values: [60]
+    values: [75]
   xy_dim:
     values: [1]
+  clip_grads:
+    values: [0,1]
   grad_clip_val:
     values: [0.1]
   cuda_visible:
-    values: ['3']
+    values: ['1']
   quantize_alphabet:
-    values: [2,5]
+    values: [2,4,8,10]
   gamma_cap:
-    values: [1000000000]
+    values: [1000000000, 10]
   D:
-    values: [0.06, 0.055, 0.05, 0.045, 0.04, 0.035, 0.03, 0.025, 0.02, 0.015, 0.01, 0.005, 0.0]
-  P:
-    values: [0.15]
+#    values: [0.065, 0.06, 0.055, 0.05, 0.045, 0.04, 0.035, 0.03, 0.025, 0.02, 0.015, 0.01, 0.005, 0.0]
+    values: [0.0]
   using_wandb:
     values: [1]
+  noise_encoder:
+    values: [0,1]
   latent_dim:
-    values: [2,4]
+    values: [2,6]
   regularize:
     values: [1]
   save_epoch:
-    values: [15]
+    values: [20]
   perception:
-    values: [0, 1]
-  perceptionless_epochs:
-    values: [0, 5]
+    values: [0]
+  sweep:
+    values: [1]
   model:
     values: ['MNIST_VAE_BM']
   wandb_project_name:
-    values: ["BM_model_rdp_sweep1"]
+    values: ["BM_MNIST_SWEEP_gamma"]
+  quantizer:
+    values: ['traditional','fsq']
   experiment:
     values: ["mnist_vae"]
 

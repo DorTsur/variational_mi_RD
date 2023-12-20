@@ -157,3 +157,6 @@ def compute_huffman_entropy(symbols_hard):
     entropy = -torch.sum(probabilities * torch.log(probabilities))
 
     return entropy
+
+
+

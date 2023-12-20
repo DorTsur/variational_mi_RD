@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 import torch.autograd as autograd
-
+from dataloader import GetDataLoader
 
 
 
@@ -32,8 +32,12 @@ def GetTrainer(config, model, data_gen):
         trainer = TrainBothDiscrete(config, model, data_gen)
     elif config.trainer == 'Both_Loader':
         trainer = TrainWithLoader(config, model, data_gen)
+    elif config.trainer == 'OnlyRDP':
+        trainer = TrainOnlyRDP(config, model, data_gen)
     elif config.trainer == 'MINE_NDT_discrete':
         trainer = TrainDiscreteGSM(config, model, data_gen)
+    elif config.trainer == 'MINE_NDT_coding':
+        trainer = TrainCoding(config, model, data_gen)
     # elif config.trainer == 'Images':
     #     trainer = TrainImages(config, model, data_gen)
     else:
@@ -643,10 +647,176 @@ class TrainBothDiscrete(TrainMINE):
         return TV.detach().cpu().numpy()
 
 
+class TrainCoding(TrainMINE):
+    """
+    Training for vector data with coding scheme
+    """
+    def __init__(self, config, model, data_gen):
+        super().__init__(config, model, data_gen)
+        self.opt['ndt'] = optim.Adam(self.model['ndt'].parameters(), lr=config.lr/2)
+        self.expected_sol = GaussianRateDistortion(D=config.D, sigmas=self.data_gen.sigmas)
+        print(f'Expected rate for distortion {config.D} is {self.expected_sol} [nats]')
+        self.visualizer = Visualizer(config)
+        self.gamma = config.gamma_d
+        self.distortion = 'mse'
+
+
+    def train(self):
+        # Simple implementation of joint training - not alternating
+        mi_list = []
+        for i in range(self.config.num_iter):
+            # evaluate every fix iter num (over the size of several batches):
+            if i % self.config.eval_freq == 0:
+                mi_eval, ent_eval = self.eval_step(mode='final')
+                mi_eval = mi_eval.detach().cpu().numpy()
+                ent_eval = ent_eval.detach().cpu().numpy()
+                self.mi_list.append(mi_eval)
+                print(f'Eval step, estimated mi {mi_eval}, distance from expected: {mi_eval - self.expected_sol}, quantized entropy {ent_eval}')
+                if self.using_wandb:
+                    wandb.log({'mi_eval': mi_eval})
+                    wandb.log({'ent_eval': ent_eval})
+                    wandb.log({'est-expected_eval': mi_eval - self.expected_sol})
+                #     increase gamma if requested
+                if self.config.increase_gamma:
+                    self.gamma = min(self.config.gamma_cap, 10 * self.gamma)
+
+            # train step MINE:
+            x = self.data_gen.sample_x()
+            x = x.cuda()
+            y = self.model['ndt'](x)
+
+            mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'], 'q_loss')
+            loss = -mi  # -mi for maximization
+            loss.backward()
+
+            if self.config.clip_grads:
+                torch.nn.utils.clip_grad_norm_(self.model['kl'].parameters(), self.config.grad_clip_val)
+            self.opt['kl'].step()
+
+            # train step NDT:
+            for opt in self.opt.values():
+                opt.zero_grad()
+
+            x = self.data_gen.sample_x()
+            x = x.cuda()
+            y = self.model['ndt'](x)
+
+            mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
+            loss = mi + self.gamma * self.distortion_reg(x, y)
+            loss.backward()
+
+            if self.config.clip_grads:
+                torch.nn.utils.clip_grad_norm_(self.model['ndt'].parameters(), self.config.grad_clip_val)
+            self.opt['ndt'].step()
+
+            # ANYTHING ELSE IN THE LOOP?
+
+
+    def plot_result(self, data):
+        # Plot the training losses.
+        plt.figure(figsize=(10, 5))
+        plt.title("MI vs. Iteration")
+        plt.plot(data, label="Estaimted MI")
+        plt.xlabel("iterations")
+        plt.ylabel("MI [nats]")
+        plt.legend()
+        plt.savefig(self.config.figDir + "/MI Loss Curve")
+
+    def distortion_reg(self, x, y):
+        if self.config.data == 'MNIST':
+            return torch.square(nn.MSELoss()(x,y) - self.config.D)
+        if self.distortion == 'mse':
+            return torch.square(torch.mean(torch.square(torch.linalg.norm(x - y, dim=-1))) - self.config.D)
+
+    def evaluate(self, epoch):
+        """
+        run ove the entire dataset. calculate the loss evaluated over the dataset and the entropy of the data.
+        """
+        batches = 50
+        symbols = []
+        mis = []
+        ds = []
+        for _ in range(batches):
+            x = self.data_gen.sample_x()
+            x = x.cuda()
+            y, s = self.model['ndt'].full_forward(x)
+            mi = estimate_mutual_information(self.config.kl_loss, x, y,
+                                             self.model['kl'],
+                                             'q_loss').detach().cpu().numpy()
+            mis.append(mi)
+            distortion = self.calc_distortion(x, y).detach().cpu().numpy()
+            ds.append(distortion)
+            symbols.append(s)
+
+        s = torch.concatenate(symbols, dim=0)
+        mi = np.mean(mis)
+        distortion = np.mean(ds)
+
+        quant_entropy = self.model['ndt'].calc_quantized_entropy(s)
+        if self.config.quantizer == 'traditional':
+            quant_entropy = quant_entropy * self.config.latent_dim
+
+        if self.config.using_wandb:
+            wandb.log({'mi_eval': mi})
+            wandb.log({'distortion_eval': distortion})
+            wandb.log({'rate_upper_bound': np.log2(self.config.quantize_alphabet)*self.config.latent_dim})
+            wandb.log({'quantized_entropy_eval': quant_entropy})
+
+        print(f'performed eval on epoch {epoch}')
+
+
+    def process_results(self, save=True):
+        if not os.path.exists('results'):
+            os.makedirs('results')
+
+        # save estimates to numpy file in results directory
+        if self.config.kl_loss == 'smile':
+            filename = f'results/{self.config.experiment}_batch_{self.config.batch_size}_activation_' \
+                       f'{self.config.critic_activation}_D_{self.config.D}_{self.config.kl_loss}_tau_{self.config.tau_smile}.npy'
+        else:
+            filename = f'results/{self.config.experiment}_batch_{self.config.batch_size}_activation_' \
+                       f'{self.config.critic_activation}_D_{self.config.D}_{self.config.kl_loss}.npy'
+        np.save(filename, self.estimates)
+
+    def calc_distortion(self,x,y):
+        x = x.detach().cpu()
+        y = y.detach().cpu()
+
+        if self.config.data == 'MNIST':
+            return nn.MSELoss()(x, y)
+        return torch.square(torch.mean(torch.square(torch.linalg.norm(x - y, dim=-1))) - self.config.D)
+
+    def compute_gradient_penalty(self, h, x, y):
+        """
+        Calculates the gradient penalty loss for Wasserstein Discriminator
+        code from https://github.com/eriklindernoren/PyTorch-GAN
+        """
+        # Random weight term for interpolation between real and fake samples
+        alpha = torch.Tensor(np.random.random((x.size(0), 1, 1, 1))).cuda()
+        # Get random interpolation between real and fake samples
+        interpolates = (alpha * x + ((1 - alpha) * y)).requires_grad_(True)
+        d_interpolates = h(interpolates)
+        fake = Variable(torch.Tensor(x.shape[0], 1).fill_(1.0), requires_grad=False).cuda()
+        # Get gradient w.r.t. interpolates
+        gradients = autograd.grad(
+            outputs=d_interpolates,
+            inputs=interpolates,
+            grad_outputs=fake,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gradient_penalty
+
 
 
 ##################################################################################################################
 class TrainWithLoader(TrainMINE):
+    """
+    Training for MNIST data
+    """
     def __init__(self, config, model, dataloader):
         super().__init__(config, model, dataloader)
         self.opt['ndt'] = optim.Adam(self.model['ndt'].parameters(), lr=config.lr/2)
@@ -668,6 +838,8 @@ class TrainWithLoader(TrainMINE):
             return
         mi_list = []
         for epoch in range(self.config.num_epochs):
+            if epoch in (0,self.config.num_epochs-1):
+                self.evaluate(epoch)
             mi_epoch = []
             distortion_epoch = []
             if self.config.increase_gamma:
@@ -752,6 +924,7 @@ class TrainWithLoader(TrainMINE):
                 wandb.log({'d_train': distortion_epoch})
                 wandb.log({'Epoch': epoch})
 
+        self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
 
         # self.plot_result(mi_list)
 
@@ -759,6 +932,8 @@ class TrainWithLoader(TrainMINE):
         # Simple implementation of joint training - not alternating
         mi_list = []
         for epoch in range(self.config.num_epochs):
+            if epoch in (0,self.config.num_epochs-1):
+                self.evaluate(epoch)
             mi_epoch = []
             distortion_epoch = []
             perception_epoch = []
@@ -815,9 +990,6 @@ class TrainWithLoader(TrainMINE):
                 """
                 train this model for first 'k' epochs and then see if further training is needed on every epoch.
                 """
-
-
-
                 for opt in self.opt.values():
                     opt.zero_grad()
 
@@ -849,8 +1021,10 @@ class TrainWithLoader(TrainMINE):
             if self.config.using_wandb:
                 wandb.log({'mi_train': mi_epoch})
                 wandb.log({'d_train': distortion_epoch})
+                wandb.log({'p_train': perception_epoch})
                 wandb.log({'Epoch': epoch})
 
+        self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
         # self.plot_result(mi_list)
 
     def train_club(self):
@@ -961,40 +1135,81 @@ class TrainWithLoader(TrainMINE):
             return (Wasserstein_KR(x, y, self.model['perception'])-self.config.P).square()
         return 0.0
 
-    def eval_step(self, mode='final'):
-        eval = []
-        batches = self.config.eval_batches if mode == 'final' else 2
-        for _ in range(batches):
-            # sample from decay sigmas model:
-            x = self.data_gen.sample_x()
-            u = self.data_gen.sample_u()
+    # def eval_step(self, mode='final'):
+    #     eval = []
+    #     batches = self.config.eval_batches if mode == 'final' else 2
+    #     for _ in range(batches):
+    #         # sample from decay sigmas model:
+    #         x = self.data_gen.sample_x()
+    #         u = self.data_gen.sample_u()
+    #
+    #         # pass through ndt
+    #         x = x.to(u.dtype)
+    #         x, u = x.cuda(), u.cuda()
+    #         y = self.model['ndt'](x, u)
+    #
+    #         if self.config.kl_loss == 'ent_decomp':
+    #             Dy = estimate_mutual_information(estimator='dy', x=x, y=y, critic_fn=self.model['kl']['y'])
+    #             Dxy = estimate_mutual_information(estimator='dxy', x=None, y=y, critic_fn=self.model['kl']['xy'])
+    #             mi = Dxy-Dy
+    #
+    #         else:
+    #             mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
+    #
+    #         eval.append(mi)
+    #
+    #     self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
+    #
+    #     torch.cuda.empty_cache()
+    #
+    #     if self.config.using_wandb:
+    #         entropy, ub = self.model['ndt'].entropy_coded_huffman(x)
+    #         wandb.log({'rate_ub': ub})
+    #         wandb.log({'huffman_entropy': entropy})
+    #         print(f'rate {ub} and entropy {entropy}')
+    #
+    #     return sum(eval)/len(eval)
 
-            # pass through ndt
-            x = x.to(u.dtype)
-            x, u = x.cuda(), u.cuda()
-            y = self.model['ndt'](x, u)
+    def evaluate(self, epoch):
+        """
+        run ove the entire dataset. calculate the loss evaluated over the dataset and the entropy of the data.
+        """
+        data = GetDataLoader(self.config)
+        symbols = []
+        mis = []
+        ds = []
+        ps = []
+        for i, (x, _) in enumerate(data, 0):
+            x = x.cuda()
+            y, s = self.model['ndt'].full_forward(x)
+            mi = estimate_mutual_information(self.config.kl_loss, x.reshape(-1, 784), y.reshape(-1, 784), self.model['kl'],
+                                             'q_loss').detach().cpu().numpy()
+            mis.append(mi)
+            distortion = self.calc_distortion(x, y).detach().cpu().numpy()
+            ds.append(distortion)
+            symbols.append(s)
+            if self.config.perception:
+                ps.append(Wasserstein_KR(x, y, self.model['perception']).detach().cpu().numpy())
+        s = torch.concatenate(symbols, dim=0)
+        mi = np.mean(mis)
+        distortion = np.mean(ds)
+        perception = np.mean(ps)
 
-            if self.config.kl_loss == 'ent_decomp':
-                Dy = estimate_mutual_information(estimator='dy', x=x, y=y, critic_fn=self.model['kl']['y'])
-                Dxy = estimate_mutual_information(estimator='dxy', x=None, y=y, critic_fn=self.model['kl']['xy'])
-                mi = Dxy-Dy
 
-            else:
-                mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
-
-            eval.append(mi)
-
-        self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
-
-        torch.cuda.empty_cache()
+        quant_entropy = self.model['ndt'].calc_quantized_entropy(s)
+        if self.config.quantizer == 'traditional':
+            quant_entropy = quant_entropy * self.config.latent_dim
 
         if self.config.using_wandb:
-            entropy, ub = self.model['ndt'].entropy_coded(x)
-            wandb.log({'rate_ub': ub})
-            wandb.log({'huffman_entropy': entropy})
-            print(f'rate {ub} and entropy {entropy}')
+            wandb.log({'mi_eval': mi})
+            wandb.log({'distortion_eval': distortion})
+            wandb.log({'rate_upper_bound': np.log2(self.config.quantize_alphabet)*self.config.latent_dim})
+            wandb.log({'quantized_entropy_eval': quant_entropy})
+            if self.config.perception:
+                wandb.log({'perception_eval': perception})
 
-        return sum(eval)/len(eval)
+        print(f'performed eval on epoch {epoch}')
+
 
     def process_results(self, save=True):
         if not os.path.exists('results'):
@@ -1041,6 +1256,311 @@ class TrainWithLoader(TrainMINE):
         gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
         return gradient_penalty
 
+
+
+##################################################################################################################
+class TrainOnlyRDP(TrainMINE):
+    def __init__(self, config, model, dataloader):
+        super().__init__(config, model, dataloader)
+        self.opt['ndt'] = optim.Adam(self.model['ndt'].parameters(), lr=config.lr/2)
+        self.dataloader = dataloader
+        self.visualizer = Visualizer(config)
+        self.gamma = config.gamma_d
+        self.distortion = 'mse'
+        if config.perception:
+            self.opt['perception'] = optim.Adam(self.model['perception'].parameters(), lr=config.lr)
+            self.gamma_gp = 10.0
+        self.mi = config.latent_dim * np.log(config.quantize_alphabet)
+        self.gamma_rdp = config.gamma_rdp
+
+    def train(self):
+        # Simple implementation of joint training - not alternating
+        for epoch in range(self.config.num_epochs):
+            # if epoch in (0,self.config.num_epochs-1):
+            #     self.evaluate(epoch)
+            distortion_epoch = []
+            perception_epoch = []
+
+            for i, (x, _) in enumerate(self.dataloader, 0):
+                x = x.cuda()
+                y = self.model['ndt'](x)
+                distortion = self.distortion_reg(x.reshape(-1, 784), y.reshape(-1, 784))
+                loss = distortion
+                if epoch >= self.config.perceptionless_epochs:
+                    perception = self.perception_reg(x, y)
+                    loss += self.gamma_rdp * perception
+                else:
+                    perception = 0.0
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['ndt'].parameters(), self.config.grad_clip_val)
+
+                self.opt['ndt'].step()
+
+                d = self.calc_distortion(x,y)
+                p = Wasserstein_KR(x, y, self.model['perception']).detach().cpu().numpy()
+
+                distortion_epoch.append(d)
+                perception_epoch.append(p)
+
+
+                # perception discriminator step (Wasserstein perception implementation)
+                """
+                train this model for first 'k' epochs and then see if further training is needed on every epoch.
+                """
+
+
+
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                y = self.model['ndt'](x).detach()
+                W_loss = -Wasserstein_KR(x, y, self.model['perception'])
+                grad_penalty = self.compute_gradient_penalty(self.model['perception'], x, y)
+                loss = W_loss + self.gamma_gp * grad_penalty
+                loss.backward()
+                # print(f'W_loss={W_loss.detach().cpu().numpy()}, GP={grad_penalty}')
+
+                # if self.config.clip_grads:
+                #     torch.nn.utils.clip_grad_norm_(self.model['perception'].parameters(), self.config.grad_clip_val)
+                self.opt['perception'].step()
+
+                if i != 0 and i % 100 == 0:
+                    print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
+
+
+            # print(self.model['ndt'].quantizer.centers)
+            distortion_epoch = np.mean(distortion_epoch)
+            perception_epoch = np.mean(perception_epoch)
+            print(f'Epoch {epoch + 1}, Rate {self.mi}, Distortion {distortion_epoch:.4f}, Perception {perception_epoch:.4f}')
+
+            if epoch % self.config.save_epoch == 0 and self.config.data == 'MNIST':
+                self.visualizer.visualize(epoch=epoch, dataloader=self.dataloader, model=self.model['ndt'])
+
+            if self.config.using_wandb:
+                wandb.log({'d_train': distortion_epoch})
+                wandb.log({'p_train': perception_epoch})
+                wandb.log({'Epoch': epoch})
+
+        self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
+        # self.plot_result(mi_list)
+
+    def train_club(self):
+        """
+        Training routine that combines the CLUB and a VAE model.
+        """
+        mi_list = []
+        for epoch in range(self.config.num_epochs):
+            mi_epoch = []
+            distortion_epoch = []
+            if self.config.increase_gamma:
+                self.gamma = min(self.config.gamma_cap, 10*self.gamma)
+
+            for i, (x, _) in enumerate(self.dataloader, 0):
+                # CLUB step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                x = x.cuda()
+                y, mu, logvar = self.model['ndt'](x)
+                x = x.reshape(-1, 784)
+                y = y.reshape(-1, 784)
+
+                loss = log_loss((mu, logvar, y))
+                # verify we don't need a '-'
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['kl'].parameters(), self.config.grad_clip_val)
+                self.opt['kl'].step()
+
+                # VAE step:
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                for opt in self.opt.values():
+                    opt.zero_grad()
+
+                x = x.cuda()
+                y, mu, logvar = self.model['ndt'](x)
+                x = x.reshape(-1, 784)
+                y = y.reshape(-1, 784)
+
+                loss = club_loss((mu, logvar, y))
+                # verify we don't need a '-'
+                distortion_reg = self.gamma*self.distortion_reg(x, y)
+                loss += distortion_reg
+
+                if self.config.quantizer_centers_reg and self.config.quantize_alphabet > 0:
+                    loss += 0.1*torch.sum(self.model['ndt'].quantizer.centers ** 2)
+
+                if self.config.perception:
+                    loss += self.perception_reg(x, y)
+
+                loss.backward()
+
+                if self.config.clip_grads:
+                    torch.nn.utils.clip_grad_norm_(self.model['ndt'].parameters(), self.config.grad_clip_val)
+                self.opt['ndt'].step()
+
+                distortion = self.calc_distortion(x, y)
+
+
+                mi_epoch.append(loss.detach().cpu().numpy())
+                distortion_epoch.append(distortion.numpy())
+                if i != 0 and i % 100 == 0:
+                    print(f'Epoch [{epoch + 1}/{self.config.num_epochs}], Iteration [{i}/{len(self.dataloader)}]')
+
+            mi_epoch = np.mean(mi_epoch)
+            distortion_epoch = np.mean(distortion_epoch)
+            print(f'Epoch {epoch+1}, Estimated MI {mi_epoch:.3f} [nats], Distortion {distortion_epoch:.3f}')
+            mi_list.append(mi_epoch)
+
+
+
+            if epoch % self.config.save_epoch == 0 and self.config.data == 'MNIST':
+                self.visualizer.visualize(epoch=epoch, dataloader=self.dataloader, model=self.model['ndt'])
+
+            if self.config.using_wandb:
+                wandb.log({'mi_train': mi_epoch})
+                wandb.log({'d_train': distortion_epoch})
+                wandb.log({'Epoch': epoch})
+
+        # self.plot_result(mi_list)
+
+    def plot_result(self, data):
+        # Plot the training losses.
+        plt.figure(figsize=(10, 5))
+        plt.title("MI vs. Iteration")
+        plt.plot(data, label="Estaimted MI")
+        plt.xlabel("iterations")
+        plt.ylabel("MI [nats]")
+        plt.legend()
+        plt.savefig(self.config.figDir + "/MI Loss Curve")
+
+    def distortion_reg(self, x, y):
+        if self.config.data == 'MNIST':
+            return torch.square(nn.MSELoss()(x,y) - self.config.D)
+        if self.distortion == 'mse':
+            return torch.square(torch.mean(torch.square(torch.linalg.norm(x - y, dim=-1))) - self.config.D)
+
+    def perception_reg(self, x, y):
+        if not self.config.perception:
+            return 0.0
+        if self.config.perception_type == 'W2' and self.config.x_dim == 1:
+            return Wasserstein1D(x, y, p=2)
+        if self.config.data == 'MNIST':
+            return (Wasserstein_KR(x, y, self.model['perception'])-self.config.P).square()
+        return 0.0
+
+    # def eval_step(self, mode='final'):
+    #     eval = []
+    #     batches = self.config.eval_batches if mode == 'final' else 2
+    #     for _ in range(batches):
+    #         # sample from decay sigmas model:
+    #         x = self.data_gen.sample_x()
+    #         u = self.data_gen.sample_u()
+    #
+    #         # pass through ndt
+    #         x = x.to(u.dtype)
+    #         x, u = x.cuda(), u.cuda()
+    #         y = self.model['ndt'](x, u)
+    #
+    #         if self.config.kl_loss == 'ent_decomp':
+    #             Dy = estimate_mutual_information(estimator='dy', x=x, y=y, critic_fn=self.model['kl']['y'])
+    #             Dxy = estimate_mutual_information(estimator='dxy', x=None, y=y, critic_fn=self.model['kl']['xy'])
+    #             mi = Dxy-Dy
+    #
+    #         else:
+    #             mi = estimate_mutual_information(self.config.kl_loss, x, y, self.model['kl'])
+    #
+    #         eval.append(mi)
+    #
+    #     self.visualizer.visualize(epoch='final', dataloader=self.dataloader, model=self.model['ndt'])
+    #
+    #     torch.cuda.empty_cache()
+    #
+    #     if self.config.using_wandb:
+    #         entropy, ub = self.model['ndt'].entropy_coded_huffman(x)
+    #         wandb.log({'rate_ub': ub})
+    #         wandb.log({'huffman_entropy': entropy})
+    #         print(f'rate {ub} and entropy {entropy}')
+    #
+    #     return sum(eval)/len(eval)
+
+    def evaluate(self, epoch):
+        """
+        run ove the entire dataset. calculate the loss evaluated over the dataset and the entropy of the data.
+        """
+        data = GetDataLoader(self.config)
+        symbols = []
+        ds = []
+        for i, (x, _) in enumerate(data, 0):
+            x = x.cuda()
+            y, s = self.model['ndt'].full_forward(x)
+            distortion = self.calc_distortion(x, y).detach().cpu().numpy()
+            ds.append(distortion)
+            symbols.append(s)
+        s = torch.concatenate(symbols, dim=0)
+        distortion = np.mean(ds)
+
+
+        quant_entropy = self.model['ndt'].calc_quantized_entropy(s)
+        if self.config.quantizer == 'traditional':
+            quant_entropy = quant_entropy * self.config.latent_dim
+
+        if self.config.using_wandb:
+            wandb.log({'distortion_eval': distortion})
+            wandb.log({'quantized_entropy_eval': quant_entropy})
+
+        print(f'performed eval on epoch {epoch}')
+
+
+    def process_results(self, save=True):
+        if not os.path.exists('results'):
+            os.makedirs('results')
+
+        # save estimates to numpy file in results directory
+        if self.config.kl_loss == 'smile':
+            filename = f'results/{self.config.experiment}_batch_{self.config.batch_size}_activation_' \
+                       f'{self.config.critic_activation}_D_{self.config.D}_{self.config.kl_loss}_tau_{self.config.tau_smile}.npy'
+        else:
+            filename = f'results/{self.config.experiment}_batch_{self.config.batch_size}_activation_' \
+                       f'{self.config.critic_activation}_D_{self.config.D}_{self.config.kl_loss}.npy'
+        np.save(filename, self.estimates)
+
+    def calc_distortion(self,x,y):
+        x = x.detach().cpu()
+        y = y.detach().cpu()
+
+        if self.config.data == 'MNIST':
+            return nn.MSELoss()(x, y)
+        return torch.square(torch.mean(torch.square(torch.linalg.norm(x - y, dim=-1))) - self.config.D)
+
+    def compute_gradient_penalty(self, h, x, y):
+        """
+        Calculates the gradient penalty loss for Wasserstein Discriminator
+        code from https://github.com/eriklindernoren/PyTorch-GAN
+        """
+        # Random weight term for interpolation between real and fake samples
+        alpha = torch.Tensor(np.random.random((x.size(0), 1, 1, 1))).cuda()
+        # Get random interpolation between real and fake samples
+        interpolates = (alpha * x + ((1 - alpha) * y)).requires_grad_(True)
+        d_interpolates = h(interpolates)
+        fake = Variable(torch.Tensor(x.shape[0], 1).fill_(1.0), requires_grad=False).cuda()
+        # Get gradient w.r.t. interpolates
+        gradients = autograd.grad(
+            outputs=d_interpolates,
+            inputs=interpolates,
+            grad_outputs=fake,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gradient_penalty
 
 
 
